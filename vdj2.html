@@ -50,17 +50,18 @@ class GameScene extends Phaser.Scene {
       this.load.image(`pathogen_${index}`, `Sprites/${file}`);
     });
 
-    // Load background music (pick the first available track)
-    try {
-      this.musicFiles = [
-        '8-bit-arcade-138828.mp3',
-        '8-bit-music-no-copyright-background-instrumental-pixel-party-322342.mp3',
-        'chiptune-hibride-407598.mp3',
-        'ominous-8-bit-arcade-drums-353412.mp3'
-      ];
-      const first = this.musicFiles[0];
-      if (first) this.load.audio('bgm', `music/${first}`);
-    } catch(e) { console.warn('Failed to queue bgm', e); }
+        // Load all background music tracks for a randomized playlist
+        try {
+          this.musicFiles = [
+            '8-bit-arcade-138828.mp3',
+            '8-bit-music-no-copyright-background-instrumental-pixel-party-322342.mp3',
+            'chiptune-hibride-407598.mp3',
+            'ominous-8-bit-arcade-drums-353412.mp3'
+          ];
+          this.musicFiles.forEach((m, i) => {
+            this.load.audio(`bgm_${i}`, `music/${m}`);
+          });
+        } catch(e) { console.warn('Failed to queue bgm list', e); }
   }
 
   create() {
@@ -77,31 +78,17 @@ class GameScene extends Phaser.Scene {
       line: 0x64748b
     };
 
-    // Initialize round manager and start first round
+    // Initialize round manager
     this.initRounds();
 
-  // Create Remove button (created once for all rounds)
-  this.createRemoveButton();
+    // Create Remove button (created once for all rounds)
+    this.createRemoveButton();
 
-  // Start the first round after UI buttons/audio are ready
+  // Start first round immediately (tutorial removed)
   this.setupRound();
 
-    // Prepare and start background music after user interaction (autoplay policy)
+    // Prepare randomized music playlist & playback after user interaction
     try {
-      this.bgm = this.sound.add('bgm', { loop: true, volume: 0.18 });
-      // Try to start immediately (may be blocked by autoplay policies)
-      try { if (this.bgm && !this.bgm.isPlaying && !this.sound.mute) this.bgm.play(); } catch(e) {}
-      // Fallbacks if audio is locked
-      if (this.sound.locked) {
-        this.sound.once('unlocked', () => {
-          try { if (this.bgm && !this.bgm.isPlaying && !this.sound.mute) this.bgm.play(); } catch(e) {}
-        });
-      }
-      // Extra fallback on first interaction
-      this.input.once('pointerdown', () => {
-        try { if (this.sound.context && this.sound.context.state === 'suspended') this.sound.context.resume(); } catch(e) {}
-        try { if (this.bgm && !this.bgm.isPlaying && !this.sound.mute) this.bgm.play(); } catch(e) {}
-      });
       // simple mute toggle in top-left under target
       const muteX = 24; const muteY = 24;
       const saved = localStorage.getItem('vdj2_muted');
@@ -114,13 +101,49 @@ class GameScene extends Phaser.Scene {
           this.sound.mute = !this.sound.mute;
           this.muteBtn.setText(this.sound.mute ? '🔇' : '🔊');
           localStorage.setItem('vdj2_muted', this.sound.mute ? '1' : '0');
-          if (this.bgm) {
-            if (this.sound.mute && this.bgm.isPlaying) this.bgm.pause();
-            if (!this.sound.mute && !this.bgm.isPlaying) this.bgm.play();
+          if (this.currentTrack) {
+            if (this.sound.mute) {
+              if (this.currentTrack.isPlaying) this.currentTrack.pause();
+            } else {
+              if (!this.currentTrack.isPlaying) this.currentTrack.resume();
+            }
           }
         } catch(e) { console.warn('mute toggle failed', e); }
       });
-    } catch(e) { console.warn('BGM setup failed', e); }
+      // Build shuffled playlist
+      this.playlistOrder = this.shuffle(this.musicFiles.map((_, i) => i));
+      this.playlistIndex = 0;
+      this.currentTrack = null;
+      const playNext = () => {
+        if (!this.playlistOrder || this.playlistOrder.length === 0) return;
+        const keyIndex = this.playlistOrder[this.playlistIndex];
+        const key = `bgm_${keyIndex}`;
+        if (this.currentTrack) { try { this.currentTrack.stop(); } catch(e) {} }
+        try {
+          this.currentTrack = this.sound.add(key, { volume: 0.18 });
+          this.currentTrack.once('complete', () => {
+            // advance index & wrap
+            this.playlistIndex = (this.playlistIndex + 1) % this.playlistOrder.length;
+            playNext();
+          });
+          if (!this.sound.mute) this.currentTrack.play();
+        } catch(e) { console.warn('Failed to play track', key, e); }
+      };
+      const startPlaylist = () => {
+        // Avoid duplicate starts
+        if (!this.currentTrack || !this.currentTrack.isPlaying) playNext();
+      };
+      // Attempt immediate start (may be blocked until input)
+      startPlaylist();
+      if (this.sound.locked) {
+        this.sound.once('unlocked', () => { startPlaylist(); });
+      }
+      // Extra fallback on first interaction
+      this.input.once('pointerdown', () => {
+        try { if (this.sound.context && this.sound.context.state === 'suspended') this.sound.context.resume(); } catch(e) {}
+        startPlaylist();
+      });
+    } catch(e) { console.warn('Playlist setup failed', e); }
   }
 
   displayTarget() {
@@ -176,7 +199,7 @@ class GameScene extends Phaser.Scene {
 
   buildLocus() {
     const centerY = this.scale.height / 2;
-    const margin = 80; // margin from screen edges
+    const margin = 40; // tighter margin from screen edges for larger boxes
     const availableWidth = this.scale.width - (2 * margin);
 
     // Define the segments in order
@@ -192,9 +215,9 @@ class GameScene extends Phaser.Scene {
     segments.forEach(seg => totalBoxes += seg.count);
     
     // Calculate box size to use full width
-    const gap = 20; // gap between boxes
-    const boxSize = (availableWidth - (totalBoxes - 1) * gap) / totalBoxes;
-    const lineThickness = 8;
+  const gap = 12; // smaller gap to make boxes larger
+  const boxSize = (availableWidth - (totalBoxes - 1) * gap) / totalBoxes;
+  const lineThickness = 10;
     
     const totalWidth = totalBoxes * boxSize + (totalBoxes - 1) * gap;
     const startX = margin + boxSize / 2;
@@ -232,6 +255,11 @@ class GameScene extends Phaser.Scene {
         segmentIndex[segment.type]++;
       }
     });
+    // Instruction text above locus
+    if (!this.roundActors) this.roundActors = [];
+    const instructY = centerY - (boxSize/2) - 44;
+    const instruct = this.add.text(this.scale.width/2, instructY, 'Remove Segments to Match the Target Sequence', { fontSize:'28px', color:'#e2e8f0', fontStyle:'bold' }).setOrigin(0.5);
+    this.roundActors.push(instruct);
   }
 
   createBox(x, y, size, label, fillSpec, interactive = false) {
@@ -241,7 +269,7 @@ class GameScene extends Phaser.Scene {
     const graphics = this.add.graphics();
     // Fill will be drawn below via helper to support multi-band colors
     graphics.lineStyle(6, this.PALETTE.stroke, 1);
-    const radius = 16;
+  const radius = 20;
     // draw fill (single color or multi-band)
     this.drawBoxFill(graphics, size, radius, fillSpec);
     // stroke outline
@@ -320,6 +348,11 @@ class GameScene extends Phaser.Scene {
     // Only allow selection for D/J in DJ phase, and V in V phase
     if ((this.phase === 'DJ_SELECT' && (type === 'D' || type === 'J')) ||
         (this.phase === 'V_SELECT' && type === 'V')) {
+      // cancel DJ hint on first interaction with D/J
+      if (this.phase === 'DJ_SELECT' && (type === 'D' || type === 'J')) {
+        this.firstDJInteraction = true;
+        if (this.djHintTimer) { try { this.djHintTimer.remove(false); } catch(e) {} this.djHintTimer = null; }
+      }
       this.toggleSelection(container);
     }
   }
@@ -384,26 +417,10 @@ class GameScene extends Phaser.Scene {
   }
 
   createTrashBin() {
-    const binX = 120;
-    const binY = this.scale.height - 200; // a bit higher to fit label
-    const binW = 280;
-    const binH = 160;
-
-    // Draw visible bin box
-  if (!this.roundActors) this.roundActors = [];
-  const g = this.add.graphics();
-  g.fillStyle(0x0b1220, 1);
-  g.fillRoundedRect(binX - binW/2, binY - binH/2, binW, binH, 10);
-  g.lineStyle(3, 0x334155, 1);
-  g.strokeRoundedRect(binX - binW/2, binY - binH/2, binW, binH, 10);
-  const binLabel = this.add.text(binX, binY - binH/2 - 16, 'BIN', { fontSize:'18px', color:'#e5e7eb', fontStyle:'bold' }).setOrigin(0.5);
-  this.roundActors.push(g, binLabel);
-
-    // Container to hold discarded segments (positions relative to bin center)
-    this.binContainer = this.add.container(binX - binW/2 + 12, binY - binH/2 + 12); // top-left corner origin
-    this.roundActors.push(this.binContainer);
-    this.binBounds = { x: binX - binW/2 + 12, y: binY - binH/2 + 12, w: binW - 24, h: binH - 24 };
-    this.binX = binX; this.binY = binY; this.binW = binW; this.binH = binH;
+    // Bin visuals disabled per request. No drawing or container.
+    this.binContainer = null;
+    this.binBounds = null;
+    this.binX = null; this.binY = null; this.binW = null; this.binH = null;
   }
 
   createRemoveButton() {
@@ -431,38 +448,54 @@ class GameScene extends Phaser.Scene {
 
   removeSelected() {
     if (this.phase === 'DONE' || this.selectedBoxes.length === 0) return;
+    // Prevent removing all required segments, which would soft lock the game
+    if (this.phase === 'DJ_SELECT') {
+      const dBoxes = this.locusTiles.filter(b => b.active && b.getData('type') === 'D');
+      const jBoxes = this.locusTiles.filter(b => b.active && b.getData('type') === 'J');
+      const selD = this.selectedBoxes.filter(b => b.getData('type') === 'D').length;
+      const selJ = this.selectedBoxes.filter(b => b.getData('type') === 'J').length;
+      const dRemain = dBoxes.length - selD;
+      const jRemain = jBoxes.length - selJ;
+      if (dRemain < 1 || jRemain < 1) {
+        if (this.showQuickMsg) this.showQuickMsg('Keep at least one D and one J.', '#fde68a');
+        const toClear = [...this.selectedBoxes];
+        toClear.forEach(box => { if (box.getData && box.getData('selected')) this.toggleSelection(box); });
+        return;
+      }
+    } else if (this.phase === 'V_SELECT') {
+      const vBoxes = this.locusTiles.filter(b => b.active && b.getData('type') === 'V');
+      const selV = this.selectedBoxes.filter(b => b.getData('type') === 'V').length;
+      const vRemain = vBoxes.length - selV;
+      if (vRemain < 1) {
+        if (this.showQuickMsg) this.showQuickMsg('Keep at least one V.', '#fde68a');
+        const toClear = [...this.selectedBoxes];
+        toClear.forEach(box => { if (box.getData && box.getData('selected')) this.toggleSelection(box); });
+        return;
+      }
+    }
     
     // Store boxes to remove
     const boxesToRemove = [...this.selectedBoxes];
     this.selectedBoxes = [];
     
-    // Animate selected boxes to trash bin
-    boxesToRemove.forEach((box, index) => {
-      const targetX = this.binX - this.binW/2 + 40 + (index * 18);
-      const targetY = this.binY; // animate near center of bin
+    // Animate selected boxes fading out in-place (bin removed)
+    boxesToRemove.forEach((box) => {
       this.tweens.add({
         targets: box,
-        x: targetX,
-        y: targetY,
-        scale: 0.5,
-        alpha: 1,
-        duration: 500,
+        alpha: 0,
+        scale: 0.6,
+        duration: 300,
         ease: 'Power2',
         onComplete: () => {
           // Remove from locus tiles
           const locusIndex = this.locusTiles.indexOf(box);
           if (locusIndex > -1) this.locusTiles.splice(locusIndex, 1);
-          // Clear selection visuals and disable interactivity
+          // Clean up selection visuals and interactivity
           box.setData('selected', false);
           const glow = box.getData('selectionGlow'); if (glow) { if (glow._tween) glow._tween.stop(); glow.clear(); glow.setVisible(false); }
-          // Disable hit area
           const hit = box.list && box.list.find(ch => ch.name === 'hitArea');
           if (hit && hit.disableInteractive) hit.disableInteractive();
-          // Reparent into bin container and lay out
-          this.binContainer.add(box);
-          box.x = 0; box.y = 0; // reset then layout will position
-          this.discardedSegments.push(box);
-          this.layoutDiscardedSegments();
+          box.destroy();
         }
       });
     });
@@ -493,14 +526,18 @@ class GameScene extends Phaser.Scene {
   slideBoxesTogether() {
     // Recalculate positions for remaining boxes
     const centerY = this.scale.height / 2;
-    const margin = 80;
+    const margin = 40;
     const availableWidth = this.scale.width - (2 * margin);
-    const gap = 20;
+    const gap = 12;
     
     const remaining = this.locusTiles.filter(box => box.active);
     const totalBoxes = remaining.length;
     
-    if (totalBoxes === 0) return;
+    if (totalBoxes === 0) {
+      if (this.showQuickMsg) this.showQuickMsg('No segments left – restarting target.', '#fca5a5');
+      this.time.delayedCall(800, () => this.setupRound());
+      return;
+    }
     
     const boxSize = remaining[0].getData('size');
     const totalWidth = totalBoxes * boxSize + (totalBoxes - 1) * gap;
@@ -772,6 +809,18 @@ class GameScene extends Phaser.Scene {
     this.displayTarget();
     this.buildLocus();
     this.createTrashBin();
+    // DJ hint: flash D/J segments gently after 3s if no interaction
+    this.firstDJInteraction = false;
+    if (this.djHintTimer) { try { this.djHintTimer.remove(false); } catch(e) {} this.djHintTimer = null; }
+    this.djHintTimer = this.time.delayedCall(3000, () => {
+      if (this.phase === 'DJ_SELECT' && !this.firstDJInteraction) {
+        const flashBoxes = this.locusTiles.filter(b => b.active && (b.getData('type') === 'D' || b.getData('type') === 'J'));
+        flashBoxes.forEach(b => {
+          if (b.getData('selected')) return;
+          this.tweens.add({ targets: b, alpha: 0.55, duration: 260, yoyo: true, repeat: 2, ease: 'Sine.easeInOut' });
+        });
+      }
+    });
   }
 
   resetRoundCleanup() {
@@ -780,6 +829,7 @@ class GameScene extends Phaser.Scene {
       this.roundActors.forEach(obj => { try { obj.destroy && obj.destroy(); } catch(e) {} });
       this.roundActors = [];
     }
+    if (this.djHintTimer) { try { this.djHintTimer.remove(false); } catch(e) {} this.djHintTimer = null; }
     if (this.locusTiles && this.locusTiles.length) {
       this.locusTiles.forEach(box => { try { box.destroy && box.destroy(); } catch(e) {} });
       this.locusTiles = [];
@@ -810,6 +860,8 @@ class GameScene extends Phaser.Scene {
       this.endGame();
     }
   }
+
+  
 
   endGame() {
     // Final overlay
@@ -859,7 +911,7 @@ class GameScene extends Phaser.Scene {
     this.hudRound = this.add.text(this.scale.width - 286, 60, '', { fontSize:'16px', color:'#ffffff' });
     this.hudAttempts = this.add.text(this.scale.width - 286, 84, '', { fontSize:'16px', color:'#ffffff' });
     this.hudHistory = this.add.text(this.scale.width - 286, 108, '', { fontSize:'16px', color:'#ffffff' });
-    this.hudTime = this.add.text(this.scale.width - 158, 132, 'Time: 00:00.00', { fontSize:'16px', color:'#ffffff' }).setOrigin(0.5, 0);
+  this.hudTime = this.add.text(this.scale.width - 158, 132, 'Time: 0 s', { fontSize:'16px', color:'#ffffff' }).setOrigin(0.5, 0);
     this.hudContainer.add([this.hudBg, this.hudTitle, this.hudRound, this.hudAttempts, this.hudHistory, this.hudTime]);
     // Periodically update running time while a run is in progress
     this.time.addEvent({ delay: 250, loop: true, callback: () => {
@@ -883,14 +935,20 @@ class GameScene extends Phaser.Scene {
   }
 
   formatTime(ms) {
-    const total = Math.max(0, Math.floor(ms));
-    const minutes = Math.floor(total / 60000);
-    const seconds = Math.floor((total % 60000) / 1000);
-    const hundredths = Math.floor((total % 1000) / 10);
-    const mm = String(minutes).padStart(2, '0');
-    const ss = String(seconds).padStart(2, '0');
-    const hh = String(hundredths).padStart(2, '0');
-    return `${mm}:${ss}.${hh}`;
+    const seconds = Math.floor(Math.max(0, ms) / 1000);
+    return `${seconds} s`;
+  }
+
+  // Quick toast message helper used for small notices
+  showQuickMsg(text, color = '#e5e7eb', duration = 1100) {
+    try {
+      const msg = this.add.text(this.scale.width/2, 140, text, {
+        fontSize:'28px', color, fontStyle:'bold', stroke:'#000', strokeThickness:3
+      }).setOrigin(0.5).setAlpha(0).setDepth(3500);
+      this.tweens.add({ targets: msg, alpha: 1, y: 120, duration: 220, ease: 'Back.easeOut', onComplete: () => {
+        this.time.delayedCall(duration, () => this.tweens.add({ targets: msg, alpha: 0, duration: 240, onComplete: () => msg.destroy() }));
+      }});
+    } catch(e) { /* noop */ }
   }
 
   shuffle(arr) {
