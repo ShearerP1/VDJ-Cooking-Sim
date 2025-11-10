@@ -864,32 +864,114 @@ class GameScene extends Phaser.Scene {
   
 
   endGame() {
-    // Final overlay
-    const overlay = this.add.rectangle(this.scale.width/2, this.scale.height/2, this.scale.width, this.scale.height, 0x000000, 0.65).setDepth(5000);
-    const title = this.add.text(this.scale.width/2, this.scale.height/2 - 40, 'All 10 targets completed!', { fontSize:'56px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5001);
-    const btn = this.add.rectangle(this.scale.width/2, this.scale.height/2 + 60, 240, 70, 0x16a34a).setStrokeStyle(3, 0x166534).setDepth(5001).setInteractive({ useHandCursor: true });
-    const btnText = this.add.text(this.scale.width/2, this.scale.height/2 + 60, 'Play Again', { fontSize:'28px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5001);
-    // Scoreboard: total time and best time
+    // Compute run stats
     const totalMs = this.runStartTime ? (performance.now() - this.runStartTime) : 0;
-    const totalFormatted = this.formatTime ? this.formatTime(totalMs) : `${(totalMs/1000).toFixed(2)}s`;
+    const attemptsCount = (this.successHistory ? this.successHistory.length : 0);
+    const failures = (this.successHistory ? this.successHistory.filter(v => !v).length : 0);
+    // Update personal best
     const bestKey = 'vdj_best_time_ms';
     let prevBest = parseFloat(localStorage.getItem(bestKey));
     if (!prevBest || isNaN(prevBest) || totalMs < prevBest) {
       prevBest = totalMs;
       try { localStorage.setItem(bestKey, String(prevBest)); } catch(e) {}
     }
-    const bestFormatted = this.formatTime ? this.formatTime(prevBest) : `${(prevBest/1000).toFixed(2)}s`;
-    const attemptsCount = (this.successHistory ? this.successHistory.length : 0);
-    const failures = (this.successHistory ? this.successHistory.filter(v => !v).length : 0);
-    const timeText = this.add.text(this.scale.width/2, this.scale.height/2 + 10, `Time: ${totalFormatted}`, { fontSize:'32px', color:'#f8fafc', fontStyle:'bold' }).setOrigin(0.5).setDepth(5001);
-    const bestText = this.add.text(this.scale.width/2, this.scale.height/2 + 50, `Best: ${bestFormatted}`, { fontSize:'24px', color:'#94a3b8' }).setOrigin(0.5).setDepth(5001);
-    const attemptsText = this.add.text(this.scale.width/2, this.scale.height/2 + 100, `Attempts: ${attemptsCount}   Failures: ${failures}`, { fontSize:'24px', color:'#e5e7eb' }).setOrigin(0.5).setDepth(5001);
-    btn.on('pointerover', () => btn.setFillStyle(0x22c55e));
-    btn.on('pointerout', () => btn.setFillStyle(0x16a34a));
-    btn.on('pointerdown', () => {
-      // Reset rounds and start anew
-      [overlay, title, btn, btnText, timeText, bestText, attemptsText].forEach(o => { try { o.destroy(); } catch(e) {} });
-      this.runStartTime = null;
+    // Leaderboard integration: defer adding until user submits name
+    this.finalTimeMs = totalMs;
+    // Overlay container
+    const overlay = this.add.rectangle(this.scale.width/2, this.scale.height/2, this.scale.width, this.scale.height, 0x000000, 0.70).setDepth(5000);
+    const panelW = Math.min(1000, this.scale.width - 120);
+    const panelH = Math.min(620, this.scale.height - 120);
+    const panel = this.add.graphics().setDepth(5001);
+    panel.fillStyle(0x1e293b, 0.95);
+    panel.fillRoundedRect((this.scale.width - panelW)/2, (this.scale.height - panelH)/2, panelW, panelH, 20);
+    panel.lineStyle(3, 0x334155);
+    panel.strokeRoundedRect((this.scale.width - panelW)/2, (this.scale.height - panelH)/2, panelW, panelH, 20);
+    const title = this.add.text(this.scale.width/2, (this.scale.height - panelH)/2 + 50, 'All Targets Neutralized!', { fontSize:'52px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5002);
+    const statsText = this.add.text(this.scale.width/2, (this.scale.height - panelH)/2 + 120,
+      `Time: ${this.formatTime(totalMs)}    Attempts: ${attemptsCount}    Failures: ${failures}`,
+      { fontSize:'26px', color:'#e2e8f0' }).setOrigin(0.5).setDepth(5002);
+    const bestLine = this.add.text(this.scale.width/2, (this.scale.height - panelH)/2 + 160,
+      `Personal Best: ${this.formatTime(prevBest)}`,
+      { fontSize:'22px', color:'#94a3b8' }).setOrigin(0.5).setDepth(5002);
+
+    // Username input (DOM element) and submit button
+    const inputX = this.scale.width/2 - panelW/2 + 80;
+    const formY = (this.scale.height - panelH)/2 + 210;
+    // Create DOM manually since we didn't enable Phaser DOM plugin earlier
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = 'Enter username';
+    nameInput.maxLength = 16;
+    nameInput.style.position = 'absolute';
+    nameInput.style.left = `${inputX}px`;
+    nameInput.style.top = `${formY}px`;
+    nameInput.style.width = '240px';
+    nameInput.style.padding = '10px 14px';
+    nameInput.style.borderRadius = '8px';
+    nameInput.style.border = '2px solid #334155';
+    nameInput.style.background = '#0f172a';
+    nameInput.style.color = '#f8fafc';
+    nameInput.style.fontSize = '18px';
+    nameInput.style.fontFamily = 'Arial, sans-serif';
+    nameInput.style.zIndex = '6000';
+    document.body.appendChild(nameInput);
+    const submitBtn = document.createElement('button');
+    submitBtn.textContent = 'Submit Score';
+    submitBtn.style.position = 'absolute';
+    submitBtn.style.left = `${inputX + 260}px`;
+    submitBtn.style.top = `${formY}px`;
+    submitBtn.style.width = '160px';
+    submitBtn.style.height = '48px';
+    submitBtn.style.border = '2px solid #1e3a8a';
+    submitBtn.style.borderRadius = '8px';
+    submitBtn.style.background = '#2563eb';
+    submitBtn.style.color = '#ffffff';
+    submitBtn.style.fontSize = '18px';
+    submitBtn.style.fontWeight = 'bold';
+    submitBtn.style.cursor = 'pointer';
+    submitBtn.style.fontFamily = 'Arial, sans-serif';
+    submitBtn.style.zIndex = '6000';
+    document.body.appendChild(submitBtn);
+
+    const leaderboardTitle = this.add.text(this.scale.width/2, formY + 70, 'Leaderboard (Fastest Times)', { fontSize:'30px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5002);
+    const leaderboardList = this.add.text(this.scale.width/2, formY + 120, '', { fontSize:'22px', color:'#e2e8f0', align:'center' }).setOrigin(0.5, 0).setDepth(5002);
+
+    const refreshLeaderboardDisplay = () => {
+      const entries = this.getLeaderboard();
+      const lines = entries.slice(0, 10).map((e, i) => {
+        const timeStr = this.formatTime(e.timeMs);
+        return `${String(i+1).padStart(2,' ')}. ${e.name.padEnd(12,' ')}  ${timeStr}`;
+      });
+      leaderboardList.setText(lines.join('\n') || 'No scores yet.');
+    };
+    refreshLeaderboardDisplay();
+
+    const finalizeScore = () => {
+      let raw = (nameInput.value || '').trim();
+      if (!raw) raw = 'Anon';
+      // Basic sanitization
+      raw = raw.replace(/[^a-zA-Z0-9_\- ]/g,'').substring(0,16);
+      this.addLeaderboardEntry(raw, this.finalTimeMs);
+      // Attempt remote sync if configured
+      this.syncLeaderboardRemote();
+      refreshLeaderboardDisplay();
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitted';
+      nameInput.disabled = true;
+    };
+    submitBtn.addEventListener('click', finalizeScore);
+    nameInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') finalizeScore(); });
+
+    // Replay button
+    const playBtn = this.add.rectangle(this.scale.width/2, (this.scale.height - panelH)/2 + panelH - 70, 260, 70, 0x16a34a)
+      .setStrokeStyle(3, 0x166534).setDepth(5002).setInteractive({ useHandCursor: true });
+    const playBtnText = this.add.text(this.scale.width/2, (this.scale.height - panelH)/2 + panelH - 70, 'Play Again', { fontSize:'30px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5003);
+    playBtn.on('pointerover', () => playBtn.setFillStyle(0x22c55e));
+    playBtn.on('pointerout', () => playBtn.setFillStyle(0x16a34a));
+    playBtn.on('pointerdown', () => {
+      [overlay, panel, title, statsText, bestLine, leaderboardTitle, leaderboardList, playBtn, playBtnText].forEach(o => { try { o.destroy(); } catch(e) {} });
+      try { nameInput.remove(); submitBtn.remove(); } catch(e) {}
+      this.runStartTime = null; this.finalTimeMs = null;
       this.initRounds();
       this.setupRound();
     });
@@ -958,6 +1040,39 @@ class GameScene extends Phaser.Scene {
     }
     return arr;
   }
+
+  // ===== Leaderboard helpers =====
+  getLeaderboard() {
+    try {
+      const raw = localStorage.getItem('vdj_leaderboard');
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(e => e && typeof e.timeMs === 'number' && typeof e.name === 'string')
+        .sort((a,b) => a.timeMs - b.timeMs);
+    } catch(e) { return []; }
+  }
+  saveLeaderboard(list) {
+    try { localStorage.setItem('vdj_leaderboard', JSON.stringify(list.slice(0,20))); } catch(e) {}
+  }
+  addLeaderboardEntry(name, timeMs) {
+    const entry = { name, timeMs, date: Date.now() };
+    const lb = this.getLeaderboard();
+    lb.push(entry);
+    lb.sort((a,b) => a.timeMs - b.timeMs);
+    this.saveLeaderboard(lb);
+  }
+  syncLeaderboardRemote() {
+    // Stub: if REMOTE_LEADERBOARD_URL global is defined, attempt POST
+    const url = window.REMOTE_LEADERBOARD_URL;
+    if (!url) return; // not configured
+    const latest = this.getLeaderboard().slice(0,10);
+    try {
+      fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ scores: latest }) })
+        .catch(()=>{});
+    } catch(e) {}
+    // Optionally could GET updated list; omitted for simplicity
+  }
 }
 
 const config = {
@@ -969,6 +1084,8 @@ const config = {
     width: 1920, 
     height: 1080 
   },
+  // Enable DOM creation if later we want Phaser-managed DOM (currently using raw DOM elements directly)
+  dom: { createContainer: true },
   backgroundColor: '#0f172a',
   scene: [GameScene],
   render: {
