@@ -101,25 +101,7 @@ class GameScene extends Phaser.Scene {
     };
   // removed pool label per UI update
 
-  const dzY = 140;
-
-  this.dropSlots = [];
-  const slotSize = 220; // Square slots slightly larger than the boxes (updated for larger cards)
-  const startX = width/2 - slotSize*2;
-        // center the three slots horizontally with a consistent gap
-        const slotGap = 60;
-        const totalWidth = 3 * slotSize + 2 * slotGap;
-        const startLeft = Math.round((width - totalWidth) / 2);
-        const slotNames = ['V','D','J'];
-        for (let i=0;i<3;i++) {
-          const x = startLeft + slotSize/2 + i*(slotSize + slotGap);
-      const rect = this.add.rectangle(x, dzY+20, slotSize, slotSize, 0x0b1220).setStrokeStyle(2, 0x17375f).setAlpha(0.45);
-      const zone = this.add.zone(x, dzY+20, slotSize, slotSize)
-        .setName(slotNames[i])
-        .setRectangleDropZone(slotSize, slotSize);
-      // store rect reference so we can highlight it when a placed tile is dragged
-      this.dropSlots.push({ zone, rect, occupied:null, name: slotNames[i], x, y:dzY+20 });
-    }
+  // Drag-drop removed: no drop slots needed
 
   // Expanded pools so there are many more segments available
   this.vPool = ['V1','V2','V3','V4','V5','V6','V7','V8','V9','V10'];
@@ -207,87 +189,35 @@ class GameScene extends Phaser.Scene {
       }
     }});
 
-    // Removed top-center recipe boxes and top-right target indicator per user request
+    // Top-center: recipe boxes (three) to show the target V-D-J
+    this.topRecipeBoxes = [];
+    const topY = 32;
+    const topBoxW = 110;
+    const topGap = 18;
+    const topTotalWidth = 3 * topBoxW + 2 * topGap;
+    const topStartX = Math.round((width - topTotalWidth) / 2) + topBoxW/2;
+    for (let i=0;i<3;i++) {
+      const x = topStartX + i * (topBoxW + topGap);
+      const r = this.add.rectangle(x, topY, topBoxW, 56, 0x0b1220).setStrokeStyle(2, this.PALETTE.neutralStroke).setAlpha(0.95).setDepth(13);
+      const t = this.add.text(x, topY, '', { fontSize:'18px', color:'#e6eef8', align:'center' }).setOrigin(0.5).setDepth(13);
+      this.topRecipeBoxes.push({ rect: r, text: t });
+    }
 
-    this.input.on('dragstart', (pointer, gameObject) => {
-      gameObject.setScale(1.05);
-      gameObject.setDepth(20);
-      // mark as not yet dropped so dragend knows whether to return-to-pool
-      gameObject.setData('dropped', false);
-      // mark as being dragged so conveyor movement ignores it
-      gameObject.setData('dragging', true);
-      // if this object was placed in a slot, free that slot so it can be moved
-      const prevSlotIndex = gameObject.getData('inSlot');
-      if (prevSlotIndex != null) {
-        const ps = this.dropSlots[prevSlotIndex];
-        if (ps && ps.occupied === gameObject) {
-          ps.occupied = null;
-          // highlight the slot while the tile is being dragged from it
-          if (ps.rect) {
-            const t = gameObject.getData('type');
-            this.highlightSlotWithType(ps, t);
-          }
-        }
-        gameObject.setData('inSlot', null);
-        gameObject.setData('placed', false);
-      }
-    });
+    // Top-right: current target pathogen image (next to boxes)
+    const targetBoxW = 140;
+    const targetBoxH = 140;
+    const targetX = topStartX + topTotalWidth/2 + topGap + targetBoxW/2; // right of the boxes
+    const targetY = topY;
+    this.targetContainer = this.add.container(targetX, targetY).setDepth(12).setSize(targetBoxW, targetBoxH);
+    this.targetGraphic = this.add.graphics().setDepth(13);
+    this.targetContainer.add(this.targetGraphic);
+    this.targetImage = null;
 
-    this.input.on('drag', (pointer, gameObject, dragX, dragY) => {
-      gameObject.x = dragX;
-      gameObject.y = dragY;
-    });
+    // Track current target and initialize UI
+    this.currentTargetIndex = -1;
+    this.updateCurrentTarget();
 
-    this.input.on('drop', (pointer, gameObject, dropZone) => {
-      const slot = this.dropSlots.find(s => s.zone === dropZone);
-      if (!slot) { this.returnToPool(gameObject); return; }
-      // Accept any tile into any slot. If slot already had a tile, return it to its pool/home.
-      const prev = slot.occupied;
-      if (prev && prev !== gameObject) {
-        // free previous tile and send it back to pool/conveyor
-        slot.occupied = null;
-        prev.setData('inSlot', null);
-        prev.setData('placed', false);
-        prev.setData('dropped', false);
-        // animate previous back to its home position
-        this.returnToPool(prev);
-      }
-
-      // place the new tile into the slot
-      gameObject.x = slot.x;
-      gameObject.y = slot.y;
-      gameObject.setData('dropped', true);
-      gameObject.setData('dragging', false);
-      gameObject.setData('placed', true);
-      const slotIndex = this.dropSlots.indexOf(slot);
-      if (slotIndex >= 0) { gameObject.setData('inSlot', slotIndex); }
-      gameObject.setScale(1);
-      slot.occupied = gameObject;
-      // set the slot outline to match the placed tile color for clarity
-      if (slot.rect) {
-        const t = gameObject.getData('type');
-        const col = t === 'V' ? this.PALETTE.V : (t === 'D' ? this.PALETTE.D : this.PALETTE.J);
-        slot.rect.setStrokeStyle(4, col);
-        slot.rect.setAlpha(0.95);
-      }
-      // give feedback and then check if all slots are filled
-      this.feedback.setText('Placed ' + gameObject.getData('name') + ' in slot ' + slot.name);
-      this.checkComplete();
-    });
-
-    this.input.on('dragend', (pointer, gameObject) => {
-      // clear dragging flag
-      gameObject.setData('dragging', false);
-
-      // Only return to pool if the object was not successfully dropped into a slot
-      if (!gameObject.getData('dropped')) {
-        if (gameObject.active && gameObject.input && gameObject.input.enabled) {
-          this.returnToPool(gameObject);
-        }
-      }
-      // clear any slot highlights (drag finished)
-      this.resetAllSlotOutlines();
-    });
+    // Drag events removed
 
   // Next button removed per user request
   }
@@ -700,7 +630,78 @@ class GameScene extends Phaser.Scene {
     slot.rect.setAlpha(0.9);
   }
 
-  // Removed updateCurrentTarget and all top box/target indicator logic per user request
+  // Update the top UI: three recipe boxes and the target image next to them
+  updateCurrentTarget() {
+    if (!this.pathogens || this.pathogens.length === 0) return;
+    const next = this.pathogens.findIndex(p => !p.done);
+    if (next === -1) {
+      this.currentTargetIndex = -1;
+      // clear UI
+      if (this.targetGraphic) this.targetGraphic.clear();
+      if (this.targetImage) { try { this.targetImage.destroy(); } catch(e){} this.targetImage = null; }
+      if (this.topRecipeBoxes) this.topRecipeBoxes.forEach(s => { s.text.setText(''); s.rect.setFillStyle(0x06121a); });
+      return;
+    }
+    this.currentTargetIndex = next;
+    const p = this.pathogens[next];
+
+    // Determine image key; we mapped filenames to keys when loading
+    let chosenKey = null;
+    if (this.pathogenImageKeys && this.pathogenImageKeys[next]) {
+      const entry = this.pathogenImageKeys[next];
+      if (entry && entry.key && this.textures && this.textures.exists && this.textures.exists(entry.key)) {
+        chosenKey = entry.key;
+      }
+    }
+
+    // Clear previous visuals
+    if (this.targetGraphic) this.targetGraphic.clear();
+    if (this.targetImage) { try { this.targetImage.destroy(); } catch(e){} this.targetImage = null; }
+
+    if (chosenKey && this.targetContainer) {
+      // Add image and scale to fit
+      this.targetImage = this.add.image(0, 0, chosenKey).setDepth(13);
+      const maxW = 120, maxH = 120;
+      try {
+        const tex = this.textures.get(chosenKey).getSourceImage();
+        const iw = tex.width || maxW, ih = tex.height || maxH;
+        const scale = Math.min(maxW / iw, maxH / ih);
+        this.targetImage.setScale(scale);
+      } catch (e) {
+        this.targetImage.setDisplaySize(maxW, maxH);
+      }
+      this.targetContainer.add(this.targetImage);
+    } else if (this.targetGraphic) {
+      // Fallback: draw a simple antibody-like icon
+      const colors = [0x7c3aed,0xf97316,0x10b981,0x06b6d4,0xf43f5e,0xf59e0b,0x60a5fa,0xc084fc,0xf472b6,0x34d399];
+      const col = colors[next % colors.length];
+      this.targetGraphic.fillStyle(col, 1);
+      this.targetGraphic.fillCircle(-40, -8, 18);
+      this.targetGraphic.fillCircle(40, -8, 18);
+      this.targetGraphic.fillStyle(0xffffff, 1);
+      this.targetGraphic.fillRect(-6, 6, 12, 36);
+      this.targetGraphic.lineStyle(6, col, 1);
+      this.targetGraphic.beginPath();
+      this.targetGraphic.moveTo(-22, 6);
+      this.targetGraphic.lineTo(-46, 26);
+      this.targetGraphic.moveTo(22, 6);
+      this.targetGraphic.lineTo(46, 26);
+      this.targetGraphic.strokePath();
+    }
+
+    // Update the three recipe boxes with the target sequence
+    if (this.topRecipeBoxes && Array.isArray(this.topRecipeBoxes)) {
+      const parts = (p.recipe || '').split('-');
+      for (let i = 0; i < 3; i++) {
+        const seg = parts[i] || '';
+        const box = this.topRecipeBoxes[i];
+        if (!box) continue;
+        box.text.setText(seg);
+        const fill = seg.startsWith('V') ? this.PALETTE.V : (seg.startsWith('D') ? this.PALETTE.D : this.PALETTE.J);
+        box.rect.setFillStyle(fill);
+      }
+    }
+  }
 
   resetRound() {
     this.dropSlots.forEach(s => { if (s.occupied) { s.occupied.destroy(); s.occupied = null; } });

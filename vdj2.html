@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>V(D)J Recombination Game</title>
+  <style>
+    html, body { 
+      height: 100%; 
+      width: 100%; 
+      margin: 0; 
+      background: #0f172a; 
+      overflow: hidden; 
+      font-family: Arial, sans-serif;
+    }
+    #game-container { 
+      width: 100%; 
+      height: 100%; 
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.60.0/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game-container"></div>
+  <script>
+class GameScene extends Phaser.Scene {
+  constructor() { 
+    super('GameScene');
+  }
+
+  preload() {
+    // Load sprite images
+    this.spriteFiles = [
+      'Campylobacter.PNG',
+      'Candida albicans.PNG',
+      'Escherichia coli.PNG',
+      'H.polygyrus.PNG',
+      'Norovirus.PNG',
+      'Pollen.PNG',
+      'Rotavirus.PNG',
+      'RSV.PNG',
+      'Salmonella tyhpi.PNG',
+      'T7 Phage.PNG'
+    ];
+    
+    this.spriteFiles.forEach((file, index) => {
+      this.load.image(`pathogen_${index}`, `Sprites/${file}`);
+    });
+
+    // Load background music (pick the first available track)
+    try {
+      this.musicFiles = [
+        '8-bit-arcade-138828.mp3',
+        '8-bit-music-no-copyright-background-instrumental-pixel-party-322342.mp3',
+        'chiptune-hibride-407598.mp3',
+        'ominous-8-bit-arcade-drums-353412.mp3'
+      ];
+      const first = this.musicFiles[0];
+      if (first) this.load.audio('bgm', `music/${first}`);
+    } catch(e) { console.warn('Failed to queue bgm', e); }
+  }
+
+  create() {
+    const width = this.scale.width;
+    const height = this.scale.height;
+
+    // Color palette
+    this.PALETTE = {
+      V: 0x8b5cf6,  // purple
+      D: 0xfb923c,  // orange
+      J: 0x34d399,  // green
+      C: 0xfbbf24,  // yellow/gold
+      stroke: 0x1e293b,
+      line: 0x64748b
+    };
+
+    // Initialize round manager and start first round
+    this.initRounds();
+
+  // Create Remove button (created once for all rounds)
+  this.createRemoveButton();
+
+  // Start the first round after UI buttons/audio are ready
+  this.setupRound();
+
+    // Prepare and start background music after user interaction (autoplay policy)
+    try {
+      this.bgm = this.sound.add('bgm', { loop: true, volume: 0.18 });
+      // Try to start immediately (may be blocked by autoplay policies)
+      try { if (this.bgm && !this.bgm.isPlaying && !this.sound.mute) this.bgm.play(); } catch(e) {}
+      // Fallbacks if audio is locked
+      if (this.sound.locked) {
+        this.sound.once('unlocked', () => {
+          try { if (this.bgm && !this.bgm.isPlaying && !this.sound.mute) this.bgm.play(); } catch(e) {}
+        });
+      }
+      // Extra fallback on first interaction
+      this.input.once('pointerdown', () => {
+        try { if (this.sound.context && this.sound.context.state === 'suspended') this.sound.context.resume(); } catch(e) {}
+        try { if (this.bgm && !this.bgm.isPlaying && !this.sound.mute) this.bgm.play(); } catch(e) {}
+      });
+      // simple mute toggle in top-left under target
+      const muteX = 24; const muteY = 24;
+      const saved = localStorage.getItem('vdj2_muted');
+      const initiallyMuted = saved === '1' || saved === 'true';
+      this.sound.mute = initiallyMuted;
+      this.muteBtn = this.add.text(muteX, muteY, initiallyMuted ? '🔇' : '🔊', { fontSize:'26px', color:'#e6eef8', backgroundColor:'#1e293b', padding:{x:8,y:6} })
+        .setScrollFactor(0).setDepth(2000).setInteractive({ useHandCursor: true });
+      this.muteBtn.on('pointerdown', () => {
+        try {
+          this.sound.mute = !this.sound.mute;
+          this.muteBtn.setText(this.sound.mute ? '🔇' : '🔊');
+          localStorage.setItem('vdj2_muted', this.sound.mute ? '1' : '0');
+          if (this.bgm) {
+            if (this.sound.mute && this.bgm.isPlaying) this.bgm.pause();
+            if (!this.sound.mute && !this.bgm.isPlaying) this.bgm.play();
+          }
+        } catch(e) { console.warn('mute toggle failed', e); }
+      });
+    } catch(e) { console.warn('BGM setup failed', e); }
+  }
+
+  displayTarget() {
+    const width = this.scale.width;
+    const topY = 120;
+    const boxSize = 100;
+    const gap = 20;
+    const imageSize = 140;
+
+    // Calculate positions for centered layout
+    const totalWidth = (3 * boxSize) + (2 * gap) + gap + imageSize;
+    const startX = (width - totalWidth) / 2;
+
+    // Create target boxes
+    const targetBoxes = [
+      { type: 'V', num: this.targetSequence.V },
+      { type: 'D', num: this.targetSequence.D },
+      { type: 'J', num: this.targetSequence.J }
+    ];
+
+    if (!this.roundActors) this.roundActors = [];
+
+    targetBoxes.forEach((target, index) => {
+      const x = startX + (boxSize / 2) + index * (boxSize + gap);
+      const label = `${target.type}${target.num}`;
+      const color = this.PALETTE[target.type];
+      const box = this.createBox(x, topY, boxSize, label, color);
+      this.roundActors.push(box);
+    });
+
+    // Display pathogen image to the right of boxes
+    const imageX = startX + (3 * boxSize) + (2 * gap) + gap + (imageSize / 2);
+    const pathogenKey = `pathogen_${this.currentPathogenIndex}`;
+    
+    if (this.textures.exists(pathogenKey)) {
+      const sprite = this.add.image(imageX, topY, pathogenKey);
+      const scale = Math.min(imageSize / sprite.width, imageSize / sprite.height);
+      sprite.setScale(scale);
+      this.targetImage = sprite;
+      this.roundActors.push(sprite);
+      
+      // Add pathogen name below image
+      const pathogenName = this.spriteFiles[this.currentPathogenIndex].replace('.PNG', '');
+      const nameText = this.add.text(imageX, topY + (imageSize / 2) + 25, pathogenName, {
+        fontSize: '20px',
+        color: '#ffffff',
+        fontStyle: 'bold',
+        align: 'center'
+      }).setOrigin(0.5);
+      this.roundActors.push(nameText);
+    }
+  }
+
+  buildLocus() {
+    const centerY = this.scale.height / 2;
+    const margin = 80; // margin from screen edges
+    const availableWidth = this.scale.width - (2 * margin);
+
+    // Define the segments in order
+    const segments = [
+      { type: 'V', count: 4 },
+      { type: 'D', count: 4 },
+      { type: 'J', count: 4 },
+      { type: 'C', count: 1 }
+    ];
+
+    // Calculate total boxes
+    let totalBoxes = 0;
+    segments.forEach(seg => totalBoxes += seg.count);
+    
+    // Calculate box size to use full width
+    const gap = 20; // gap between boxes
+    const boxSize = (availableWidth - (totalBoxes - 1) * gap) / totalBoxes;
+    const lineThickness = 8;
+    
+    const totalWidth = totalBoxes * boxSize + (totalBoxes - 1) * gap;
+    const startX = margin + boxSize / 2;
+
+    // Draw connecting line first (behind boxes)
+    const lineY = centerY;
+    const lineStartX = startX - boxSize / 2;
+    const lineEndX = startX + totalWidth - boxSize / 2;
+    
+  if (this.locusLine) { this.locusLine.destroy(); this.locusLine = null; }
+  const line = this.add.graphics();
+  line.lineStyle(lineThickness, this.PALETTE.line, 1);
+  line.beginPath();
+  line.moveTo(lineStartX - 20, lineY);
+  line.lineTo(lineEndX + 20, lineY);
+  line.strokePath();
+  this.locusLine = line;
+
+    // Create boxes
+    let cursorX = startX;
+    let segmentIndex = {};
+    
+    segments.forEach(segment => {
+      if (!segmentIndex[segment.type]) segmentIndex[segment.type] = 0;
+      
+      for (let i = 0; i < segment.count; i++) {
+        const num = segmentIndex[segment.type];
+        const label = `${segment.type}${num}`;
+        const color = this.PALETTE[segment.type];
+        
+  const box = this.createBox(cursorX, centerY, boxSize, label, color, true);
+        this.locusTiles.push(box);
+        
+        cursorX += boxSize + gap;
+        segmentIndex[segment.type]++;
+      }
+    });
+  }
+
+  createBox(x, y, size, label, fillSpec, interactive = false) {
+    const container = this.add.container(x, y);
+    
+    // Background box with rounded corners (higher quality)
+    const graphics = this.add.graphics();
+    // Fill will be drawn below via helper to support multi-band colors
+    graphics.lineStyle(6, this.PALETTE.stroke, 1);
+    const radius = 16;
+    // draw fill (single color or multi-band)
+    this.drawBoxFill(graphics, size, radius, fillSpec);
+    // stroke outline
+    graphics.strokeRoundedRect(-size/2, -size/2, size, size, radius);
+    
+    // Add subtle inner shadow effect
+    graphics.lineStyle(2, 0x000000, 0.2);
+    graphics.strokeRoundedRect(-size/2 + 3, -size/2 + 3, size - 6, size - 6, radius - 3);
+    
+    // Label text - scale font size based on box size
+    const fontSize = Math.floor(size * 0.4);
+    const text = this.add.text(0, 0, label, {
+      fontSize: `${fontSize}px`,
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 3
+    }).setOrigin(0.5);
+    
+    container.add([graphics, text]);
+    container.setSize(size, size);
+    container.setData('label', label);
+    container.setData('type', label.charAt(0));
+  container.setData('fillSpec', fillSpec);
+    container.setData('size', size);
+    container.setData('selected', false);
+    container.setData('graphics', graphics);
+    container.setData('text', text);
+  // Selection glow graphics (separate so we don't rebuild fill each toggle)
+  const glow = this.add.graphics();
+  glow.setVisible(false);
+  container.add(glow);
+  container.setData('selectionGlow', glow);
+    
+    // Make boxes interactive (clickable for selection) - entire box area, gating by phase later
+    if (interactive) {
+      // Create invisible hit area that covers entire box and receives input
+      const hitArea = this.add.rectangle(0, 0, size, size, 0xffffff, 0).setName('hitArea');
+      container.add(hitArea);
+
+      hitArea.setInteractive({ useHandCursor: true });
+      hitArea.on('pointerdown', () => this.onBoxClicked(container));
+      hitArea.on('pointerover', () => { this.game.canvas.style.cursor = 'pointer'; });
+      hitArea.on('pointerout', () => { this.game.canvas.style.cursor = 'default'; });
+    }
+    
+    return container;
+  }
+
+  // Helper: draw box fill as single color or multiple vertical bands (2=halves, 3=thirds)
+  drawBoxFill(g, size, radius, fillSpec) {
+    g.save && g.save();
+    if (Array.isArray(fillSpec) && fillSpec.length > 1) {
+      const bands = fillSpec.length;
+      const bandW = size / bands;
+      for (let i = 0; i < bands; i++) {
+        const x0 = -size/2 + i * bandW;
+        const r = (i === 0) ? { tl: radius, bl: radius, tr: 0, br: 0 } : (i === bands - 1) ? { tr: radius, br: radius, tl: 0, bl: 0 } : 0;
+        g.fillStyle(fillSpec[i], 1);
+        g.fillRoundedRect(x0, -size/2, bandW, size, r);
+      }
+    } else {
+      const color = Array.isArray(fillSpec) ? this.PALETTE.J : fillSpec; // fallback
+      g.fillStyle(color, 1);
+      g.fillRoundedRect(-size/2, -size/2, size, size, radius);
+    }
+    // subtle inner shadow
+    g.lineStyle(2, 0x000000, 0.2);
+    g.strokeRoundedRect(-size/2 + 3, -size/2 + 3, size - 6, size - 6, radius - 3);
+    g.restore && g.restore();
+  }
+
+  onBoxClicked(container) {
+    if (!container || !container.getData) return;
+    const type = container.getData('type');
+    // Only allow selection for D/J in DJ phase, and V in V phase
+    if ((this.phase === 'DJ_SELECT' && (type === 'D' || type === 'J')) ||
+        (this.phase === 'V_SELECT' && type === 'V')) {
+      this.toggleSelection(container);
+    }
+  }
+
+  toggleSelection(container) {
+    const isSelected = container.getData('selected');
+    container.setData('selected', !isSelected);
+    
+    const graphics = container.getData('graphics');
+    const size = container.getData('size');
+    const fillSpec = container.getData('fillSpec');
+    const radius = 16;
+    // Maintain underlying fill (no heavy clearing) by redrawing minimal surface
+    graphics.clear();
+    // base outline returns to normal; selection handled by separate glow layer
+    graphics.lineStyle(6, this.PALETTE.stroke, 1);
+    this.drawBoxFill(graphics, size, radius, fillSpec);
+    graphics.strokeRoundedRect(-size/2, -size/2, size, size, radius);
+
+    const glow = container.getData('selectionGlow');
+    if (!isSelected) {
+      // Selected now
+      if (!this.selectedBoxes.includes(container)) this.selectedBoxes.push(container);
+      glow.clear();
+      // Draw a pulsating twin outline + translucent overlay
+      const overlayAlpha = 0.18;
+      glow.fillStyle(0xffffff, overlayAlpha);
+      glow.fillRoundedRect(-size/2, -size/2, size, size, radius);
+      glow.lineStyle(4, 0xffffff, 0.95);
+      glow.strokeRoundedRect(-size/2-2, -size/2-2, size+4, size+4, radius+2);
+      glow.setVisible(true);
+      // Pulsing tween
+      if (glow._tween) glow._tween.stop();
+      glow.alpha = 1;
+      glow._tween = this.tweens.add({ targets: glow, alpha: 0.45, yoyo: true, repeat: -1, duration: 700, ease: 'Sine.easeInOut' });
+    } else {
+      // Deselected
+      const idx = this.selectedBoxes.indexOf(container);
+      if (idx > -1) this.selectedBoxes.splice(idx, 1);
+      if (glow._tween) { glow._tween.stop(); glow._tween = null; }
+      glow.clear();
+      glow.setVisible(false);
+    }
+
+    // Dim other selectable boxes when at least one selected (context emphasis)
+    const selectableTypes = this.phase === 'DJ_SELECT' ? ['D','J'] : (this.phase === 'V_SELECT' ? ['V'] : []);
+    const anySelected = this.selectedBoxes.length > 0;
+    this.locusTiles.forEach(tile => {
+      if (!tile.getData) return;
+      const tType = tile.getData('type');
+      const tGlow = tile.getData('selectionGlow');
+      if (selectableTypes.includes(tType)) {
+        if (!tile.getData('selected')) {
+          // adjust alpha for non-selected selectable boxes
+          tile.alpha = anySelected ? 0.55 : 1;
+          if (tGlow && !tile.getData('selected')) tGlow.setVisible(false);
+        } else {
+          tile.alpha = 1;
+        }
+      }
+    });
+  }
+
+  createTrashBin() {
+    const binX = 120;
+    const binY = this.scale.height - 200; // a bit higher to fit label
+    const binW = 280;
+    const binH = 160;
+
+    // Draw visible bin box
+  if (!this.roundActors) this.roundActors = [];
+  const g = this.add.graphics();
+  g.fillStyle(0x0b1220, 1);
+  g.fillRoundedRect(binX - binW/2, binY - binH/2, binW, binH, 10);
+  g.lineStyle(3, 0x334155, 1);
+  g.strokeRoundedRect(binX - binW/2, binY - binH/2, binW, binH, 10);
+  const binLabel = this.add.text(binX, binY - binH/2 - 16, 'BIN', { fontSize:'18px', color:'#e5e7eb', fontStyle:'bold' }).setOrigin(0.5);
+  this.roundActors.push(g, binLabel);
+
+    // Container to hold discarded segments (positions relative to bin center)
+    this.binContainer = this.add.container(binX - binW/2 + 12, binY - binH/2 + 12); // top-left corner origin
+    this.roundActors.push(this.binContainer);
+    this.binBounds = { x: binX - binW/2 + 12, y: binY - binH/2 + 12, w: binW - 24, h: binH - 24 };
+    this.binX = binX; this.binY = binY; this.binW = binW; this.binH = binH;
+  }
+
+  createRemoveButton() {
+    const buttonX = this.scale.width / 2;
+    const buttonY = this.scale.height - 100;
+    
+    const button = this.add.rectangle(buttonX, buttonY, 200, 60, 0xdc2626)
+      .setStrokeStyle(3, 0x991b1b);
+    
+    const buttonText = this.add.text(buttonX, buttonY, 'REMOVE', {
+      fontSize: '28px',
+      color: '#ffffff',
+      fontStyle: 'bold'
+    }).setOrigin(0.5);
+    
+    button.setInteractive({ useHandCursor: true });
+    button.on('pointerdown', () => this.removeSelected());
+    button.on('pointerover', () => {
+      button.setFillStyle(0xef4444);
+    });
+    button.on('pointerout', () => {
+      button.setFillStyle(0xdc2626);
+    });
+  }
+
+  removeSelected() {
+    if (this.phase === 'DONE' || this.selectedBoxes.length === 0) return;
+    
+    // Store boxes to remove
+    const boxesToRemove = [...this.selectedBoxes];
+    this.selectedBoxes = [];
+    
+    // Animate selected boxes to trash bin
+    boxesToRemove.forEach((box, index) => {
+      const targetX = this.binX - this.binW/2 + 40 + (index * 18);
+      const targetY = this.binY; // animate near center of bin
+      this.tweens.add({
+        targets: box,
+        x: targetX,
+        y: targetY,
+        scale: 0.5,
+        alpha: 1,
+        duration: 500,
+        ease: 'Power2',
+        onComplete: () => {
+          // Remove from locus tiles
+          const locusIndex = this.locusTiles.indexOf(box);
+          if (locusIndex > -1) this.locusTiles.splice(locusIndex, 1);
+          // Clear selection visuals and disable interactivity
+          box.setData('selected', false);
+          const glow = box.getData('selectionGlow'); if (glow) { if (glow._tween) glow._tween.stop(); glow.clear(); glow.setVisible(false); }
+          // Disable hit area
+          const hit = box.list && box.list.find(ch => ch.name === 'hitArea');
+          if (hit && hit.disableInteractive) hit.disableInteractive();
+          // Reparent into bin container and lay out
+          this.binContainer.add(box);
+          box.x = 0; box.y = 0; // reset then layout will position
+          this.discardedSegments.push(box);
+          this.layoutDiscardedSegments();
+        }
+      });
+    });
+    
+    // After removal animation, slide boxes together
+    this.time.delayedCall(600, () => {
+      this.slideBoxesTogether();
+    });
+  }
+
+  // Arrange discarded segments inside the bin in a neat grid
+  layoutDiscardedSegments() {
+    if (!this.discardedSegments) return;
+    const pad = 8;
+    const cols = 4;
+    const cellW = Math.max(40, (this.binBounds.w - pad * 2) / cols);
+    const cellH = 48;
+    this.discardedSegments.forEach((box, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = this.binBounds.x + pad + col * cellW + cellW/2;
+      const y = this.binBounds.y + pad + row * cellH + cellH/2;
+      // Since box is parented to binContainer, set global position directly for simplicity
+      this.tweens.add({ targets: box, x, y, duration: 250 });
+    });
+  }
+
+  slideBoxesTogether() {
+    // Recalculate positions for remaining boxes
+    const centerY = this.scale.height / 2;
+    const margin = 80;
+    const availableWidth = this.scale.width - (2 * margin);
+    const gap = 20;
+    
+    const remaining = this.locusTiles.filter(box => box.active);
+    const totalBoxes = remaining.length;
+    
+    if (totalBoxes === 0) return;
+    
+    const boxSize = remaining[0].getData('size');
+    const totalWidth = totalBoxes * boxSize + (totalBoxes - 1) * gap;
+    const startX = margin + (availableWidth - totalWidth) / 2 + boxSize / 2;
+    
+    // Animate each box to its new position
+    remaining.forEach((box, index) => {
+      const newX = startX + index * (boxSize + gap);
+      this.tweens.add({
+        targets: box,
+        x: newX,
+        duration: 400,
+        ease: 'Power2'
+      });
+    });
+    
+    // After sliding, check for recombination depending on phase
+    this.time.delayedCall(500, () => {
+      if (this.phase === 'DJ_SELECT') this.checkForDJRecombination();
+      else if (this.phase === 'V_SELECT') this.checkForVRecombination();
+    });
+  }
+
+  checkForDJRecombination() {
+    // Find remaining D and J segments (post-removal)
+    const dSegments = this.locusTiles.filter(box => box.active && box.getData('type') === 'D');
+    const jSegments = this.locusTiles.filter(box => box.active && box.getData('type') === 'J');
+    if (dSegments.length !== 1 || jSegments.length !== 1) return;
+
+    const dBox = dSegments[0];
+    const jBox = jSegments[0];
+    const dLabel = dBox.getData('label');
+    const jLabel = jBox.getData('label');
+    const combinedLabel = `${dLabel}${jLabel}`; // e.g. D2J1
+    const dIndex = this.locusTiles.indexOf(dBox);
+    const jIndex = this.locusTiles.indexOf(jBox);
+    const midX = (dBox.x + jBox.x) / 2;
+    const midY = dBox.y;
+
+    const recombineText = this.add.text(midX, midY - 120, 'RECOMBINE', {
+      fontSize: '48px', color: '#00ff00', fontStyle: 'bold', stroke:'#000000', strokeThickness:4
+    }).setOrigin(0.5).setAlpha(0);
+    this.tweens.add({ targets: recombineText, alpha:1, y: midY - 140, duration:300, ease:'Back.easeOut' });
+
+    this.tweens.add({
+      targets:[dBox,jBox],
+      alpha:0,
+      duration:350,
+      delay:300,
+      onComplete: () => {
+        // colors (half & half)
+        const dFill = dBox.getData('fillSpec');
+        const jFill = jBox.getData('fillSpec');
+        const left = Array.isArray(dFill) ? dFill[0] : dFill; // original D color
+        const right = Array.isArray(jFill) ? jFill.slice(-1)[0] : jFill; // original J color
+        const size = dBox.getData('size');
+        const combinedBox = this.createBox(midX, midY, size, combinedLabel, [left, right], false);
+        combinedBox.setData('type','DJ');
+        // Replace in locusTiles at smallest index
+        const minIndex = Math.min(dIndex, jIndex);
+        this.locusTiles.splice(Math.max(dIndex,jIndex),1);
+        this.locusTiles.splice(minIndex,1);
+        this.locusTiles.splice(minIndex,0, combinedBox);
+        dBox.destroy();
+        jBox.destroy();
+        // fade out text
+        this.tweens.add({ targets: recombineText, alpha:0, duration:400, delay:600, onComplete: () => recombineText.destroy() });
+        // Advance phase
+        this.phase = 'V_SELECT';
+      }
+    });
+  }
+
+  checkForVRecombination() {
+    const vSegments = this.locusTiles.filter(b => b.active && b.getData('type') === 'V');
+    const djSegments = this.locusTiles.filter(b => b.active && b.getData('type') === 'DJ');
+    if (vSegments.length !== 1 || djSegments.length !== 1) return;
+
+    const vBox = vSegments[0];
+    const djBox = djSegments[0];
+    const vLabel = vBox.getData('label');
+    const djLabel = djBox.getData('label'); // e.g. D2J1
+    const combinedLabel = `${vLabel}${djLabel}`; // e.g. V3D2J1
+
+    const midX = (vBox.x + djBox.x) / 2;
+    const midY = djBox.y;
+    const recombineText = this.add.text(midX, midY - 120, 'RECOMBINE', {
+      fontSize:'48px', color:'#00ff00', fontStyle:'bold', stroke:'#000', strokeThickness:4
+    }).setOrigin(0.5).setAlpha(0);
+    this.tweens.add({ targets: recombineText, alpha:1, y: midY - 140, duration:300, ease:'Back.easeOut' });
+
+    // Simple lift animation for emphasis instead of complex path
+    this.tweens.add({ targets: vBox, y: midY - 40, duration:250, ease:'Sine.easeOut', yoyo:true });
+
+    this.time.delayedCall(600, () => {
+      this.tweens.add({ targets:[vBox,djBox], alpha:0, duration:300, onComplete: () => {
+  const size = djBox.getData('size');
+        const vFill = vBox.getData('fillSpec');
+        const djFill = djBox.getData('fillSpec'); // [dColor, jColor]
+        const vColor = Array.isArray(vFill) ? vFill[0] : vFill;
+        const dColor = Array.isArray(djFill) ? djFill[0] : this.PALETTE.D;
+        const jColor = Array.isArray(djFill) ? djFill[1] : this.PALETTE.J;
+        const combinedBox = this.createBox(midX, midY, size, combinedLabel, [vColor, dColor, jColor], false);
+        combinedBox.setData('type','VDJ');
+        // Replace in locusTiles
+        const vIndex = this.locusTiles.indexOf(vBox);
+        const djIndex = this.locusTiles.indexOf(djBox);
+        const minIndex = Math.min(vIndex, djIndex);
+        this.locusTiles.splice(Math.max(vIndex,djIndex),1);
+        this.locusTiles.splice(minIndex,1);
+        this.locusTiles.splice(minIndex,0, combinedBox);
+        vBox.destroy(); djBox.destroy();
+        this.tweens.add({ targets: recombineText, alpha:0, duration:400, delay:400, onComplete: () => recombineText.destroy() });
+        this.phase = 'DONE';
+        // Track combined box for cleanup regardless of outcome
+        if (!this.roundActors) this.roundActors = [];
+        this.roundActors.push(combinedBox);
+        // Success path vs failure path
+        if (this.isTargetMatch(combinedLabel)) {
+          this.playCreationAndFly(combinedBox);
+          this.onRoundSuccess();
+        } else {
+          this.playFailedAttempt(combinedBox);
+        }
+      }});
+    });
+  }
+
+  // Check if combined label (e.g. V3D2J1) matches the current target sequence
+  isTargetMatch(label) {
+    if (!label || !this.targetSequence) return false;
+    const m = /^V(\d+)D(\d+)J(\d+)$/.exec(label);
+    if (!m) return false;
+    const [_, v, d, j] = m;
+    return (+v === this.targetSequence.V && +d === this.targetSequence.D && +j === this.targetSequence.J);
+  }
+
+  // Create a simple antibody graphic at (x,y), then fly to target image
+  playCreationAndFly(sourceBox) {
+    const x = sourceBox.x;
+    const y = sourceBox.y;
+    // Creation burst: expanding rings
+    const burst = this.add.graphics({ x, y });
+    const drawRing = (r, alpha) => {
+      burst.lineStyle(6, 0x93c5fd, alpha);
+      burst.strokeCircle(0, 0, r);
+    };
+    drawRing(10, 1);
+    this.tweens.add({ targets: burst, scale: 2.2, alpha: 0, duration: 600, onComplete: () => burst.destroy() });
+
+    // Antibody shape (Y-shaped)
+  const ab = this.createAntibody(x, y, 0.9);
+  if (!this.roundActors) this.roundActors = [];
+  this.roundActors.push(ab);
+    // Destination: target image position (fallback to top center)
+    const destX = this.targetImage ? this.targetImage.x : this.scale.width * 0.75;
+    const destY = this.targetImage ? this.targetImage.y : 120;
+    this.tweens.add({ targets: ab, x: destX, y: destY, rotation: 0.15, duration: 900, ease: 'Cubic.easeInOut', onComplete: () => {
+      // Attach effect: small bounce and then fade antibody slightly
+      this.tweens.add({ targets: ab, scale: 1.05, yoyo: true, duration: 180 });
+      this.tweens.add({ targets: ab, alpha: 0.85, duration: 300, delay: 250 });
+    }});
+  }
+
+  createAntibody(x, y, scale = 1) {
+    const c = this.add.container(x, y);
+    const g = this.add.graphics();
+    // Arms
+    g.lineStyle(10, 0x60a5fa, 1);
+    g.beginPath();
+    g.moveTo(-24, 0); g.lineTo(-50, -36); // left arm
+    g.moveTo(24, 0); g.lineTo(50, -36);   // right arm
+    g.moveTo(0, 0); g.lineTo(0, 40);      // stem
+    g.strokePath();
+    // Tips
+    g.fillStyle(0x60a5fa, 1);
+    g.fillCircle(-50, -36, 8);
+    g.fillCircle(50, -36, 8);
+    // Fc knob
+    g.fillStyle(0xffffff, 1);
+    g.fillCircle(0, 40, 6);
+    c.add(g);
+    c.setScale(scale);
+    c.setDepth(1000);
+    return c;
+  }
+
+  // Failure animation: antibody flies but doesn't bind, then fades and triggers retry
+  playFailedAttempt(sourceBox) {
+    const x = sourceBox.x;
+    const y = sourceBox.y;
+    // Weak creation flicker
+    const flicker = this.add.graphics({ x, y });
+    flicker.fillStyle(0xff6666, 0.5);
+    flicker.fillCircle(0,0, 18);
+    this.tweens.add({ targets: flicker, alpha:0, scale:2, duration:400, onComplete: () => flicker.destroy() });
+
+    const ab = this.createAntibody(x, y, 0.85);
+    if (!this.roundActors) this.roundActors = [];
+    this.roundActors.push(ab);
+    const destX = this.targetImage ? this.targetImage.x : this.scale.width * 0.75;
+    const destY = this.targetImage ? this.targetImage.y : 120;
+    this.tweens.add({ targets: ab, x: destX, y: destY, rotation: -0.25, duration: 900, ease: 'Cubic.easeInOut', onComplete: () => {
+      // Shake to indicate failure
+      this.tweens.add({ targets: ab, x: destX + 18, yoyo:true, repeat:4, duration:70, ease:'Sine.easeInOut' });
+      this.tweens.add({ targets: ab, alpha:0, duration:500, delay:400, onComplete: () => {
+        // Failure message then restart same round
+        this.showFailureMessage();
+      }});
+    }});
+  }
+
+  showFailureMessage() {
+    const msg = this.add.text(this.scale.width/2, 180, 'Mismatch – try again!', { fontSize:'36px', color:'#fca5a5', fontStyle:'bold', stroke:'#000', strokeThickness:3 }).setOrigin(0.5).setAlpha(0);
+    this.tweens.add({ targets: msg, alpha:1, y:160, duration:250, ease:'Back.easeOut' });
+    this.time.delayedCall(1200, () => {
+      this.tweens.add({ targets: msg, alpha:0, duration:250, onComplete: () => msg.destroy() });
+      // Restart same round (do not advance index)
+      if (!this.successHistory) this.successHistory = [];
+      this.successHistory.push(false);
+      this.attemptsThisRound = (this.attemptsThisRound || 0) + 1;
+      this.updateHud && this.updateHud();
+      this.setupRound();
+    });
+  }
+
+  // ===== Rounds management =====
+  initRounds() {
+    // Prepare a shuffled order of all pathogens (10 sprites)
+    const count = this.spriteFiles ? this.spriteFiles.length : 10;
+    this.targetOrder = this.shuffle(Array.from({ length: count }, (_, i) => i));
+    this.currentRoundIndex = 0;
+    this.roundActors = [];
+    this.successHistory = [];
+    this.attemptsThisRound = 0;
+    if (!this.hudContainer) {
+      this.createHud && this.createHud();
+    } else {
+      this.updateHud && this.updateHud();
+    }
+  }
+
+  setupRound() {
+    // Clean previous round's visuals
+    this.resetRoundCleanup();
+
+    // Reset interaction state
+    this.phase = 'DJ_SELECT';
+    this.selectedBoxes = [];
+    this.locusTiles = [];
+    this.discardedSegments = [];
+
+    // Prepare new target and pathogen
+    this.targetSequence = {
+      V: Math.floor(Math.random() * 4),
+      D: Math.floor(Math.random() * 4),
+      J: Math.floor(Math.random() * 4)
+    };
+    this.currentPathogenIndex = this.targetOrder[this.currentRoundIndex];
+    // Reset attempts counter for this target and update HUD
+    this.attemptsThisRound = 0;
+    this.updateHud && this.updateHud();
+    // Start run timer on very first round
+    if (this.currentRoundIndex === 0 && !this.runStartTime) {
+      this.runStartTime = performance.now();
+    }
+
+    // Rebuild UI for the round
+    this.displayTarget();
+    this.buildLocus();
+    this.createTrashBin();
+  }
+
+  resetRoundCleanup() {
+    // Destroy target UI, bin contents, locus tiles and line
+    if (this.roundActors && this.roundActors.length) {
+      this.roundActors.forEach(obj => { try { obj.destroy && obj.destroy(); } catch(e) {} });
+      this.roundActors = [];
+    }
+    if (this.locusTiles && this.locusTiles.length) {
+      this.locusTiles.forEach(box => { try { box.destroy && box.destroy(); } catch(e) {} });
+      this.locusTiles = [];
+    }
+    if (this.locusLine) { try { this.locusLine.destroy(); } catch(e) {} this.locusLine = null; }
+    this.targetImage = null;
+  }
+
+  onRoundSuccess() {
+    // Brief toast and then advance
+    const msg = this.add.text(this.scale.width/2, 180, 'Target neutralized!', { fontSize:'36px', color:'#bbf7d0', fontStyle:'bold', stroke:'#000', strokeThickness:3 }).setOrigin(0.5).setAlpha(0);
+    this.tweens.add({ targets: msg, alpha: 1, y: 160, duration: 250, ease: 'Back.easeOut', yoyo: false });
+    this.time.delayedCall(1200, () => {
+      this.tweens.add({ targets: msg, alpha: 0, duration: 250, onComplete: () => msg.destroy() });
+      if (!this.successHistory) this.successHistory = [];
+      this.successHistory.push(true);
+      this.updateHud && this.updateHud();
+      this.advanceToNextRoundOrEnd();
+    });
+  }
+
+  advanceToNextRoundOrEnd() {
+    this.currentRoundIndex++;
+    const total = this.spriteFiles ? this.spriteFiles.length : 10;
+    if (this.currentRoundIndex < total) {
+      this.setupRound();
+    } else {
+      this.endGame();
+    }
+  }
+
+  endGame() {
+    // Final overlay
+    const overlay = this.add.rectangle(this.scale.width/2, this.scale.height/2, this.scale.width, this.scale.height, 0x000000, 0.65).setDepth(5000);
+    const title = this.add.text(this.scale.width/2, this.scale.height/2 - 40, 'All 10 targets completed!', { fontSize:'56px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5001);
+    const btn = this.add.rectangle(this.scale.width/2, this.scale.height/2 + 60, 240, 70, 0x16a34a).setStrokeStyle(3, 0x166534).setDepth(5001).setInteractive({ useHandCursor: true });
+    const btnText = this.add.text(this.scale.width/2, this.scale.height/2 + 60, 'Play Again', { fontSize:'28px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5001);
+    // Scoreboard: total time and best time
+    const totalMs = this.runStartTime ? (performance.now() - this.runStartTime) : 0;
+    const totalFormatted = this.formatTime ? this.formatTime(totalMs) : `${(totalMs/1000).toFixed(2)}s`;
+    const bestKey = 'vdj_best_time_ms';
+    let prevBest = parseFloat(localStorage.getItem(bestKey));
+    if (!prevBest || isNaN(prevBest) || totalMs < prevBest) {
+      prevBest = totalMs;
+      try { localStorage.setItem(bestKey, String(prevBest)); } catch(e) {}
+    }
+    const bestFormatted = this.formatTime ? this.formatTime(prevBest) : `${(prevBest/1000).toFixed(2)}s`;
+    const attemptsCount = (this.successHistory ? this.successHistory.length : 0);
+    const failures = (this.successHistory ? this.successHistory.filter(v => !v).length : 0);
+    const timeText = this.add.text(this.scale.width/2, this.scale.height/2 + 10, `Time: ${totalFormatted}`, { fontSize:'32px', color:'#f8fafc', fontStyle:'bold' }).setOrigin(0.5).setDepth(5001);
+    const bestText = this.add.text(this.scale.width/2, this.scale.height/2 + 50, `Best: ${bestFormatted}`, { fontSize:'24px', color:'#94a3b8' }).setOrigin(0.5).setDepth(5001);
+    const attemptsText = this.add.text(this.scale.width/2, this.scale.height/2 + 100, `Attempts: ${attemptsCount}   Failures: ${failures}`, { fontSize:'24px', color:'#e5e7eb' }).setOrigin(0.5).setDepth(5001);
+    btn.on('pointerover', () => btn.setFillStyle(0x22c55e));
+    btn.on('pointerout', () => btn.setFillStyle(0x16a34a));
+    btn.on('pointerdown', () => {
+      // Reset rounds and start anew
+      [overlay, title, btn, btnText, timeText, bestText, attemptsText].forEach(o => { try { o.destroy(); } catch(e) {} });
+      this.runStartTime = null;
+      this.initRounds();
+      this.setupRound();
+    });
+  }
+
+  // ===== HUD (progress & attempts) =====
+  createHud() {
+    this.hudContainer = this.add.container(0, 0).setDepth(3000);
+    const bgX = this.scale.width - 300;
+    const bgY = 16;
+    const bgW = 284;
+    const bgH = 150;
+    this.hudBg = this.add.graphics();
+    this.hudBg.fillStyle(0x1e293b, 0.65);
+    this.hudBg.fillRoundedRect(bgX, bgY, bgW, bgH, 12);
+    this.hudBg.lineStyle(2, 0x334155);
+    this.hudBg.strokeRoundedRect(bgX, bgY, bgW, bgH, 12);
+    this.hudTitle = this.add.text(this.scale.width - 158, 28, 'PROGRESS', { fontSize:'20px', color:'#e2e8f0', fontStyle:'bold' }).setOrigin(0.5, 0);
+    this.hudRound = this.add.text(this.scale.width - 286, 60, '', { fontSize:'16px', color:'#ffffff' });
+    this.hudAttempts = this.add.text(this.scale.width - 286, 84, '', { fontSize:'16px', color:'#ffffff' });
+    this.hudHistory = this.add.text(this.scale.width - 286, 108, '', { fontSize:'16px', color:'#ffffff' });
+    this.hudTime = this.add.text(this.scale.width - 158, 132, 'Time: 00:00.00', { fontSize:'16px', color:'#ffffff' }).setOrigin(0.5, 0);
+    this.hudContainer.add([this.hudBg, this.hudTitle, this.hudRound, this.hudAttempts, this.hudHistory, this.hudTime]);
+    // Periodically update running time while a run is in progress
+    this.time.addEvent({ delay: 250, loop: true, callback: () => {
+      if (this.runStartTime && this.hudTime) {
+        const ms = performance.now() - this.runStartTime;
+        this.hudTime.setText(`Time: ${this.formatTime(ms)}`);
+      }
+    }});
+    this.updateHud();
+  }
+
+  updateHud() {
+    if (!this.hudRound) return;
+    const total = this.spriteFiles ? this.spriteFiles.length : 10;
+    const roundNumber = (this.currentRoundIndex || 0) + 1;
+    this.hudRound.setText(`Target: ${Math.min(roundNumber, total)} / ${total}`);
+    this.hudAttempts.setText(`Attempts this target: ${this.attemptsThisRound || 0}`);
+    const maxIcons = 12;
+    const hist = (this.successHistory || []).slice(-maxIcons).map(v => v ? '✅' : '❌').join(' ');
+    this.hudHistory.setText(`History: ${hist}`);
+  }
+
+  formatTime(ms) {
+    const total = Math.max(0, Math.floor(ms));
+    const minutes = Math.floor(total / 60000);
+    const seconds = Math.floor((total % 60000) / 1000);
+    const hundredths = Math.floor((total % 1000) / 10);
+    const mm = String(minutes).padStart(2, '0');
+    const ss = String(seconds).padStart(2, '0');
+    const hh = String(hundredths).padStart(2, '0');
+    return `${mm}:${ss}.${hh}`;
+  }
+
+  shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  scale: { 
+    mode: Phaser.Scale.FIT, 
+    autoCenter: Phaser.Scale.CENTER_BOTH, 
+    width: 1920, 
+    height: 1080 
+  },
+  backgroundColor: '#0f172a',
+  scene: [GameScene],
+  render: {
+    antialiasing: true,
+    antialias: true,
+    pixelArt: false,
+    roundPixels: false
+  }
+};
+
+const game = new Phaser.Game(config);
+  </script>
+</body>
+</html>
