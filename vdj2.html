@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
   <title>V(D)J Recombination Game</title>
   <style>
     html, body { 
@@ -12,6 +12,14 @@
       background: #0f172a; 
       overflow: hidden; 
       font-family: Arial, sans-serif;
+      /* Mobile friendliness */
+      -webkit-text-size-adjust: 100%;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      touch-action: manipulation;
+      overscroll-behavior: none;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     }
     #game-container { 
       width: 100%; 
@@ -19,7 +27,9 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      touch-action: manipulation;
     }
+    canvas { touch-action: manipulation; }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.60.0/phaser.min.js"></script>
 </head>
@@ -88,7 +98,7 @@ class GameScene extends Phaser.Scene {
   this.setupRound();
 
     // Prepare randomized music playlist & playback after user interaction
-    try {
+  try {
       // simple mute toggle in top-left under target
       const muteX = 24; const muteY = 24;
       const saved = localStorage.getItem('vdj2_muted');
@@ -144,6 +154,9 @@ class GameScene extends Phaser.Scene {
         startPlaylist();
       });
     } catch(e) { console.warn('Playlist setup failed', e); }
+
+    // Mobile UI helpers (fullscreen toggle and orientation overlay)
+    this.setupMobileUI && this.setupMobileUI();
   }
 
   displayTarget() {
@@ -895,16 +908,21 @@ class GameScene extends Phaser.Scene {
       { fontSize:'22px', color:'#94a3b8' }).setOrigin(0.5).setDepth(5002);
 
     // Username input (DOM element) and submit button
-    const inputX = this.scale.width/2 - panelW/2 + 80;
-    const formY = (this.scale.height - panelH)/2 + 210;
+    const recomputeFormPos = () => {
+      return {
+        inputX: this.scale.width/2 - panelW/2 + 80,
+        formY: (this.scale.height - panelH)/2 + (this.scale.height < 750 ? 180 : 210)
+      };
+    };
+    let { inputX, formY } = recomputeFormPos();
     // Create DOM manually since we didn't enable Phaser DOM plugin earlier
     const nameInput = document.createElement('input');
     nameInput.type = 'text';
     nameInput.placeholder = 'Enter username';
     nameInput.maxLength = 16;
     nameInput.style.position = 'absolute';
-    nameInput.style.left = `${inputX}px`;
-    nameInput.style.top = `${formY}px`;
+  nameInput.style.left = `${inputX}px`;
+  nameInput.style.top = `${formY}px`;
     nameInput.style.width = '240px';
     nameInput.style.padding = '10px 14px';
     nameInput.style.borderRadius = '8px';
@@ -918,8 +936,8 @@ class GameScene extends Phaser.Scene {
     const submitBtn = document.createElement('button');
     submitBtn.textContent = 'Submit Score';
     submitBtn.style.position = 'absolute';
-    submitBtn.style.left = `${inputX + 260}px`;
-    submitBtn.style.top = `${formY}px`;
+  submitBtn.style.left = `${inputX + 260}px`;
+  submitBtn.style.top = `${formY}px`;
     submitBtn.style.width = '160px';
     submitBtn.style.height = '48px';
     submitBtn.style.border = '2px solid #1e3a8a';
@@ -933,8 +951,8 @@ class GameScene extends Phaser.Scene {
     submitBtn.style.zIndex = '6000';
     document.body.appendChild(submitBtn);
 
-    const leaderboardTitle = this.add.text(this.scale.width/2, formY + 70, 'Leaderboard (Fastest Times)', { fontSize:'30px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5002);
-    const leaderboardList = this.add.text(this.scale.width/2, formY + 120, '', { fontSize:'22px', color:'#e2e8f0', align:'center' }).setOrigin(0.5, 0).setDepth(5002);
+  const leaderboardTitle = this.add.text(this.scale.width/2, formY + 70, 'Leaderboard (Fastest Times)', { fontSize:'30px', color:'#ffffff', fontStyle:'bold' }).setOrigin(0.5).setDepth(5002);
+  const leaderboardList = this.add.text(this.scale.width/2, formY + 120, '', { fontSize:'22px', color:'#e2e8f0', align:'center' }).setOrigin(0.5, 0).setDepth(5002);
 
     const refreshLeaderboardDisplay = () => {
       const entries = this.getLeaderboard();
@@ -974,6 +992,26 @@ class GameScene extends Phaser.Scene {
       this.runStartTime = null; this.finalTimeMs = null;
       this.initRounds();
       this.setupRound();
+    });
+    const repositionDom = () => {
+      const pos = recomputeFormPos();
+      inputX = pos.inputX; formY = pos.formY;
+      nameInput.style.left = `${inputX}px`;
+      nameInput.style.top = `${formY}px`;
+      submitBtn.style.left = `${inputX + 260}px`;
+      submitBtn.style.top = `${formY}px`;
+      leaderboardTitle.setY(formY + 70);
+      leaderboardList.setY(formY + 120);
+    };
+    this._endResizeHandler = () => repositionDom();
+    window.addEventListener('resize', this._endResizeHandler, { passive:true });
+    window.addEventListener('orientationchange', this._endResizeHandler, { passive:true });
+    // Cleanup handlers on scene shutdown
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      if (this._endResizeHandler) {
+        window.removeEventListener('resize', this._endResizeHandler);
+        window.removeEventListener('orientationchange', this._endResizeHandler);
+      }
     });
   }
 
@@ -1051,6 +1089,45 @@ class GameScene extends Phaser.Scene {
       return arr.filter(e => e && typeof e.timeMs === 'number' && typeof e.name === 'string')
         .sort((a,b) => a.timeMs - b.timeMs);
     } catch(e) { return []; }
+  }
+  
+  // ===== Mobile helpers =====
+  setupMobileUI() {
+    try {
+      // Fullscreen toggle near mute button (top-left)
+      const baseX = (this.muteBtn ? this.muteBtn.x : 24) + 44;
+      const baseY = (this.muteBtn ? this.muteBtn.y : 24);
+      this.fullBtn = this.add.text(baseX, baseY, '⛶', { fontSize:'24px', color:'#e6eef8', backgroundColor:'#1e293b', padding:{x:8,y:6} })
+        .setOrigin(0, 0).setDepth(2000).setInteractive({ useHandCursor: true });
+      this.fullBtn.on('pointerdown', () => {
+        try {
+          if (this.scale.isFullscreen) this.scale.stopFullscreen(); else this.scale.startFullscreen();
+        } catch(e) { /* noop */ }
+      });
+    } catch(e) { /* noop */ }
+
+    // Orientation overlay controls input in portrait
+    const update = () => {
+      const isPortrait = window.innerHeight > window.innerWidth;
+      if (isPortrait) {
+        if (!this.orientationOverlay) {
+          const w = this.scale.width, h = this.scale.height;
+          const rect = this.add.rectangle(w/2, h/2, w, h, 0x000000, 0.82).setDepth(10000);
+          const txt = this.add.text(w/2, h/2, 'Rotate your device\nfor the best experience', { fontSize:'42px', color:'#ffffff', fontStyle:'bold', align:'center' }).setOrigin(0.5).setDepth(10001);
+          this.orientationOverlay = rect; this.orientationText = txt;
+        }
+        this.input.enabled = false;
+      } else {
+        if (this.orientationOverlay) { try { this.orientationOverlay.destroy(); } catch(e) {} this.orientationOverlay = null; }
+        if (this.orientationText) { try { this.orientationText.destroy(); } catch(e) {} this.orientationText = null; }
+        this.input.enabled = true;
+      }
+    };
+    this._onResizeHandler = () => update();
+    window.addEventListener('resize', this._onResizeHandler, { passive: true });
+    window.addEventListener('orientationchange', this._onResizeHandler, { passive: true });
+    // Initial check
+    update();
   }
   saveLeaderboard(list) {
     try { localStorage.setItem('vdj_leaderboard', JSON.stringify(list.slice(0,20))); } catch(e) {}
